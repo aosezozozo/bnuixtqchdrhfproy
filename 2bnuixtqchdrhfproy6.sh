@@ -75,75 +75,176 @@ install() {
 
 # 配置 NAT64/DNS64 支持
 setup_nat64() {
+    clear
     echo -e "${cyan}======================================${re}"
     echo -e "${cyan}配置 NAT64/DNS64 支持${re}"
     echo -e "${cyan}======================================${re}"
     
-    # 1. 备份原有 resolv.conf
-    if [ ! -f /etc/resolv.conf.bak ]; then
-        sudo cp /etc/resolv.conf /etc/resolv.conf.bak
-        echo -e "${green}已备份原 DNS 配置到 /etc/resolv.conf.bak${re}"
+    # NAT64 提供商列表（DNS64 服务器 + 网关）
+    declare -A nat64_providers=(
+        ["dns64.dns64.net"]="2001:67c:2b0::4|2001:67c:2b0::"
+        ["nat64.xyz"]="2a01:4f9:c010:3f02::1|2a01:4f9:c010:3f02::"
+        ["trex.fi"]="2001:67c:2960:6400::4|2001:67c:2960:6400::"
+        ["go6lab.si"]="2001:67c:27e4:15::6411|2001:67c:27e4::"
+    )
+    
+    echo -e "${yellow}正在测试可用的 NAT64 网关...${re}"
+    echo ""
+    
+    working_gateway=""
+    working_dns=""
+    
+    # 测试每个提供商
+    for provider in "${!nat64_providers[@]}"; do
+        IFS='|' read -r dns_server gateway <<< "${nat64_providers[$provider]}"
+        
+        echo -e "${cyan}测试 ${provider} (${dns_server})...${re}"
+        
+        # 测试 DNS64 解析
+        test_result=$(dig AAAA ipv4only.arpa @${dns_server} +short +time=3 2>/dev/null | head -1)
+        
+        if [[ "$test_result" =~ ^64:ff9b:: ]]; then
+            echo -e "${green}  ✓ DNS64 解析成功: ${test_result}${re}"
+            
+            # 测试实际连接
+            if timeout 5 bash -c "cat < /dev/null > /dev/tcp/[64:ff9b::101:101]/443" 2>/dev/null; then
+                echo -e "${green}  ✓ TCP 连接测试成功！${re}"
+                working_gateway="$gateway"
+                working_dns="$dns_server"
+                break
+            else
+                echo -e "${yellow}  ✗ TCP 连接测试失败${re}"
+            fi
+        else
+            echo -e "${red}  ✗ DNS64 解析失败${re}"
+        fi
+        echo ""
+    done
+    
+    if [ -z "$working_gateway" ]; then
+        echo -e "${red}======================================${re}"
+        echo -e "${red}错误：没有找到可用的 NAT64 网关${re}"
+        echo -e "${red}======================================${re}"
+        echo ""
+        echo "可能的原因："
+        echo "1. 你的 VPS 提供商完全屏蔽了 NAT64 流量"
+        echo "2. 你的 IPv6 网络配置有问题"
+        echo ""
+        echo "建议："
+        echo "- 联系 VPS 提供商确认是否支持 NAT64"
+        echo "- 或使用普通的 IPv6 代理（不使用 NAT64）"
+        read -p "按回车键返回主菜单..."
+        return 1
+    fi
+    
+    echo -e "${green}======================================${re}"
+    echo -e "${green}找到可用的 NAT64 网关！${re}"
+    echo -e "${green}======================================${re}"
+    echo -e "DNS64 服务器: ${working_dns}"
+    echo -e "NAT64 网关: ${working_gateway}"
+    echo ""
+    
+    # 1. 备份原始 resolv.conf
+    if [ ! -f /etc/resolv.conf.backup ]; then
+        echo -e "${yellow}备份原始 DNS 配置...${re}"
+        sudo cp /etc/resolv.conf /etc/resolv.conf.backup
     fi
     
     # 2. 配置 DNS64 解析器
     echo -e "${yellow}配置 DNS64 解析器...${re}"
     
-    # 检查是否已经配置
-    if grep -q "2a01:4f8:c2c:123f::1" /etc/resolv.conf; then
-        echo -e "${green}DNS64 已配置${re}"
-    else
-        # 添加 DNS64 服务器到配置文件开头
-        sudo sed -i '1i# NAT64/DNS64 解析器' /etc/resolv.conf
-        sudo sed -i '2i nameserver 2a01:4f8:c2c:123f::1' /etc/resolv.conf
-        sudo sed -i '3i nameserver 2a00:1098:2c::1' /etc/resolv.conf
-        echo -e "${green}DNS64 配置完成${re}"
-    fi
+    # 移除旧的 NAT64 配置
+    sudo sed -i '/# NAT64/d' /etc/resolv.conf
+    sudo sed -i '/2001:67c:2b0::4/d' /etc/resolv.conf
+    sudo sed -i '/2a01:4f9:c010:3f02::1/d' /etc/resolv.conf
+    sudo sed -i '/2001:67c:2960:6400::4/d' /etc/resolv.conf
+    sudo sed -i '/2001:67c:27e4:15::6411/d' /etc/resolv.conf
+    sudo sed -i '/2a01:4f8:c2c:123f::1/d' /etc/resolv.conf
     
-    # 3. 获取默认网卡
-    default_nic=$(ip -6 route show default | awk '{print $5}' | head -1)
-    if [ -z "$default_nic" ]; then
-        echo -e "${red}无法获取默认 IPv6 网卡${re}"
-        return 1
-    fi
-    echo -e "${green}默认网卡: ${default_nic}${re}"
+    # 添加新的 DNS64
+    sudo sed -i "1i# NAT64/DNS64 - $(date)" /etc/resolv.conf
+    sudo sed -i "2i nameserver ${working_dns}" /etc/resolv.conf
     
-    # 4. 添加 NAT64 路由
+    echo -e "${green}✓ DNS64 配置完成${re}"
+    
+    # 3. 添加 NAT64 路由
     echo -e "${yellow}配置 NAT64 路由...${re}"
+    
+    # 删除旧路由
+    sudo ip -6 route del 64:ff9b::/96 2>/dev/null
+    
+    # 添加新路由（如果提供商指定了网关，使用 via；否则直接路由）
+    if [ "$working_gateway" != "2001:67c:2b0::" ]; then
+        sudo ip -6 route add 64:ff9b::/96 via ${working_gateway}1 2>/dev/null || \
+        sudo ip -6 route add 64:ff9b::/96 dev $(ip -6 route get 2001:4860:4860::8888 | grep -oP 'dev \K\S+') 2>/dev/null
+    else
+        # dns64.dns64.net 不需要 via，直接路由
+        sudo ip -6 route add 64:ff9b::/96 dev $(ip -6 route get 2001:4860:4860::8888 | grep -oP 'dev \K\S+') 2>/dev/null
+    fi
+    
     if ip -6 route | grep -q "64:ff9b::/96"; then
-        echo -e "${green}NAT64 路由已存在${re}"
+        echo -e "${green}✓ NAT64 路由配置完成${re}"
     else
-        sudo ip -6 route add 64:ff9b::/96 via 2a01:4f8:c2c:123f::1 dev $default_nic 2>/dev/null
-        if [ $? -eq 0 ]; then
-            echo -e "${green}NAT64 路由添加成功${re}"
-            
-            # 持久化路由配置
-            if [ -d "/etc/network/if-up.d" ]; then
-                echo "#!/bin/sh
-if [ \"\$IFACE\" = \"$default_nic\" ]; then
-    ip -6 route add 64:ff9b::/96 via 2a01:4f8:c2c:123f::1 dev $default_nic 2>/dev/null || true
-fi" | sudo tee /etc/network/if-up.d/nat64-route > /dev/null
-                sudo chmod +x /etc/network/if-up.d/nat64-route
-                echo -e "${green}NAT64 路由已持久化${re}"
-            fi
-        else
-            echo -e "${yellow}NAT64 路由添加失败（可能已存在或网关不可达）${re}"
-        fi
+        echo -e "${red}✗ NAT64 路由配置失败${re}"
     fi
     
-    # 5. 测试 NAT64 连接
-    echo -e "${yellow}测试 NAT64 连接...${re}"
-    echo -e "${cyan}测试地址: 64:ff9b::1.1.1.1 (Cloudflare DNS 1.1.1.1 的 NAT64 地址)${re}"
+    # 4. 持久化配置
+    echo -e "${yellow}配置持久化（重启后自动生效）...${re}"
     
-    if ping6 -c 2 -W 3 64:ff9b::1.1.1.1 &>/dev/null; then
-        echo -e "${green}✓ NAT64 连接测试成功！${re}"
-        echo -e "${green}你的 VPS 现在可以通过 NAT64 访问 IPv4-only 的网站了${re}"
-        return 0
+    # 创建启动脚本
+    cat > /tmp/nat64-setup.sh << EOF
+#!/bin/bash
+# NAT64 自动配置脚本
+sleep 5  # 等待网络就绪
+ip -6 route del 64:ff9b::/96 2>/dev/null
+ip -6 route add 64:ff9b::/96 dev \$(ip -6 route get 2001:4860:4860::8888 | grep -oP 'dev \K\S+') 2>/dev/null
+EOF
+    
+    sudo mv /tmp/nat64-setup.sh /usr/local/bin/nat64-setup.sh
+    sudo chmod +x /usr/local/bin/nat64-setup.sh
+    
+    # 创建 systemd 服务
+    sudo tee /etc/systemd/system/nat64-setup.service > /dev/null << EOF
+[Unit]
+Description=NAT64 Route Setup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nat64-setup.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    sudo systemctl daemon-reload
+    sudo systemctl enable nat64-setup.service 2>/dev/null
+    
+    echo -e "${green}✓ 持久化配置完成${re}"
+    
+    # 5. 最终验证
+    echo ""
+    echo -e "${cyan}======================================${re}"
+    echo -e "${cyan}验证 NAT64 配置${re}"
+    echo -e "${cyan}======================================${re}"
+    
+    echo -e "${yellow}测试 HTTP 访问...${re}"
+    if curl -6 -s --max-time 5 -o /dev/null -w "%{http_code}" http://ipv4.google.com | grep -q "200\|301\|302"; then
+        echo -e "${green}✓ NAT64 配置成功！可以访问 IPv4-only 网站！${re}"
     else
-        echo -e "${yellow}✗ NAT64 连接测试失败${re}"
-        echo -e "${yellow}这可能是正常的，某些 NAT64 网关可能不响应 ping${re}"
-        echo -e "${yellow}继续使用 NAT64 功能，实际使用时可能仍然有效${re}"
-        return 0
+        echo -e "${yellow}✗ HTTP 测试失败，但 DNS64 可用，继续...${re}"
     fi
+    
+    echo ""
+    echo -e "${green}======================================${re}"
+    echo -e "${green}NAT64 配置完成！${re}"
+    echo -e "${green}======================================${re}"
+    echo "使用的 DNS64: ${working_dns}"
+    echo "配置已持久化，重启后自动生效"
+    
+    read -p "按回车键返回主菜单..."
 }
 
 # 检查地址是否为 NAT64 地址
