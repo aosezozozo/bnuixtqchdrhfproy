@@ -557,7 +557,9 @@ case $choice in
 
   3)
     sudo ip6tables -t nat -L -v -n
-    ;;  4)
+    ;;  
+    
+  4)
     read -p "这操作不单只是清空该脚本的规则，而是将 ip6tables 规则完全清空，你确定要执行吗（Y/N 默认N）" fxxkip6tables
     fxxkip6tables=${fxxkip6tables^^} # 转换为大写
     if [ "$fxxkip6tables" == "Y" ]; then
