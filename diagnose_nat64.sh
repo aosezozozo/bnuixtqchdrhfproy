@@ -603,10 +603,10 @@ while true; do
             echo -e "${purple}• 请不要在生产环境或重要服务器上运行${re}"
             echo -e "${purple}• 请不要在绑定了信用卡的机器上运行${re}"
             echo ""
-            read -p "你确定要自行承担风险吗？(Y/N 默认N): " confirm
-            confirm=${confirm^^}
+            read -p "你确定要自行承担风险吗？(Y/N 默认N): " fxxkme
+            fxxkme=${fxxkme^^}
             
-            if [ "$confirm" == "Y" ]; then
+            if [ "$fxxkme" == "Y" ]; then
                 start 0
                 echo ""
                 echo -e "${green}======================================${re}"
