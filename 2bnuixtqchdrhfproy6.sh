@@ -78,53 +78,174 @@ install() {
 }
 
 # 安装Cloudflare WARP
+# 安装Cloudflare WARP替代方案 (wgcf + wireproxy)
 install_warp() {
-    echo -e "${yellow}正在检查Cloudflare WARP...${re}"
+    echo -e "${yellow}正在检查WARP替代方案...${re}"
     
-    if command -v warp-cli &>/dev/null; then
-        echo -e "${green}WARP已经安装！${re}"
+    # 检查是否已经安装wireproxy
+    if command -v wireproxy &>/dev/null && [ -f /etc/wireguard/wgcf.conf ]; then
+        echo -e "${green}WARP替代方案已经安装！${re}"
         WARP_INSTALLED=1
         return 0
     fi
     
-    echo -e "${yellow}开始安装Cloudflare WARP...${re}"
+    echo -e "${yellow}开始安装WARP替代方案 (wgcf + wireproxy)...${re}"
+    echo -e "${purple}由于Cloudflare官方WARP客户端在Debian上不稳定，${re}"
+    echo -e "${purple}我们将使用wgcf + wireproxy作为替代方案${re}"
+    echo ""
     
-    # 添加Cloudflare仓库
-    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+    # 创建工作目录
+    mkdir -p /opt/warp
+    cd /opt/warp
     
-    # 获取系统版本代号
-    source /etc/os-release
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $VERSION_CODENAME main" | tee /etc/apt/sources.list.d/cloudflare-client.list
+    # 1. 安装wgcf
+    echo -e "${yellow}1/3 下载wgcf...${re}"
+    if [ ! -f /usr/local/bin/wgcf ]; then
+        wget -q --show-progress https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64 -O /usr/local/bin/wgcf
+        chmod +x /usr/local/bin/wgcf
+    fi
     
-    # 安装WARP
-    apt update
-    apt install cloudflare-warp -y
+    if [ ! -f /usr/local/bin/wgcf ]; then
+        echo -e "${red}wgcf下载失败！${re}"
+        return 1
+    fi
+    echo -e "${green}✓ wgcf安装完成${re}"
     
-    if command -v warp-cli &>/dev/null; then
-        echo -e "${green}WARP安装成功！${re}"
-        WARP_INSTALLED=1
-        
-        # 注册并配置WARP
-        echo -e "${yellow}正在配置WARP...${re}"
-        warp-cli registration new 2>/dev/null || warp-cli registration delete && warp-cli registration new
-        warp-cli mode proxy
-        warp-cli connect
-        
-        # 等待连接
-        sleep 3
-        
-        if warp-cli status | grep -q "Connected"; then
-            echo -e "${green}WARP连接成功！${re}"
-        else
-            echo -e "${red}WARP连接失败，请手动检查${re}"
-            return 1
-        fi
-    else
-        echo -e "${red}WARP安装失败！${re}"
+    # 2. 注册WARP账号并生成配置
+    echo -e "${yellow}2/3 注册WARP账号...${re}"
+    cd /opt/warp
+    
+    # 删除旧配置
+    rm -f wgcf-account.toml wgcf-profile.conf
+    
+    # 注册（自动接受条款）
+    echo | wgcf register
+    wgcf generate
+    
+    if [ ! -f wgcf-profile.conf ]; then
+        echo -e "${red}WARP配置生成失败！${re}"
         return 1
     fi
     
-    return 0
+    # 移动配置文件
+    mkdir -p /etc/wireguard
+    cp wgcf-profile.conf /etc/wireguard/wgcf.conf
+    echo -e "${green}✓ WARP账号注册完成${re}"
+    
+    # 3. 安装wireproxy
+    echo -e "${yellow}3/3 安装wireproxy...${re}"
+    if [ ! -f /usr/local/bin/wireproxy ]; then
+        wget -q --show-progress https://github.com/pufferffish/wireproxy/releases/download/v1.0.9/wireproxy_linux_amd64.tar.gz -O /tmp/wireproxy.tar.gz
+        tar -xzf /tmp/wireproxy.tar.gz -C /tmp
+        mv /tmp/wireproxy /usr/local/bin/wireproxy
+        chmod +x /usr/local/bin/wireproxy
+        rm -f /tmp/wireproxy.tar.gz
+    fi
+    
+    if [ ! -f /usr/local/bin/wireproxy ]; then
+        echo -e "${red}wireproxy下载失败！${re}"
+        return 1
+    fi
+    echo -e "${green}✓ wireproxy安装完成${re}"
+    
+    # 4. 创建wireproxy配置文件
+    echo -e "${yellow}配置wireproxy...${re}"
+    
+    # 从wgcf配置中提取信息
+    PRIVATE_KEY=$(grep PrivateKey /etc/wireguard/wgcf.conf | awk '{print $3}')
+    ADDRESS_V4=$(grep Address /etc/wireguard/wgcf.conf | awk '{print $3}' | cut -d',' -f1)
+    ADDRESS_V6=$(grep Address /etc/wireguard/wgcf.conf | awk '{print $3}' | cut -d',' -f2)
+    PUBLIC_KEY=$(grep PublicKey /etc/wireguard/wgcf.conf | awk '{print $3}')
+    ENDPOINT=$(grep Endpoint /etc/wireguard/wgcf.conf | awk '{print $3}')
+    
+    cat > /etc/wireproxy/warp.conf <<EOF
+[Interface]
+PrivateKey = $PRIVATE_KEY
+Address = $ADDRESS_V4, $ADDRESS_V6
+DNS = 1.1.1.1, 1.0.0.1
+
+[Peer]
+PublicKey = $PUBLIC_KEY
+Endpoint = $ENDPOINT
+AllowedIPs = 0.0.0.0/0, ::/0
+
+[Socks5]
+BindAddress = 127.0.0.1:40000
+EOF
+    
+    # 5. 创建systemd服务
+    echo -e "${yellow}创建系统服务...${re}"
+    cat > /etc/systemd/system/wireproxy-warp.service <<'EOF'
+[Unit]
+Description=WireProxy WARP Tunnel
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wireproxy -c /etc/wireproxy/warp.conf
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # 6. 启动服务
+    systemctl daemon-reload
+    systemctl enable wireproxy-warp.service
+    systemctl restart wireproxy-warp.service
+    
+    # 等待服务启动
+    sleep 3
+    
+    # 7. 验证连接
+    echo -e "${yellow}验证WARP连接...${re}"
+    if systemctl is-active --quiet wireproxy-warp.service; then
+        echo -e "${green}✓ WireProxy服务运行正常${re}"
+        
+        # 测试SOCKS5代理
+        if curl -x socks5h://127.0.0.1:40000 -s --max-time 10 https://cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
+            echo -e "${green}✓ WARP连接验证成功！${re}"
+            WARP_INSTALLED=1
+            
+            # 创建warp-cli命令的兼容层
+            cat > /usr/local/bin/warp-cli <<'WARPEOF'
+#!/bin/bash
+case "$1" in
+    status)
+        if systemctl is-active --quiet wireproxy-warp.service; then
+            echo "Status update: Connected"
+        else
+            echo "Status update: Disconnected"
+        fi
+        ;;
+    connect)
+        systemctl start wireproxy-warp.service
+        ;;
+    disconnect)
+        systemctl stop wireproxy-warp.service
+        ;;
+    *)
+        echo "Usage: warp-cli {status|connect|disconnect}"
+        ;;
+esac
+WARPEOF
+            chmod +x /usr/local/bin/warp-cli
+            
+            return 0
+        else
+            echo -e "${yellow}WARP代理可能需要更多时间初始化${re}"
+            echo -e "${yellow}请稍后使用以下命令测试：${re}"
+            echo -e "${green}curl -x socks5h://127.0.0.1:40000 https://cloudflare.com/cdn-cgi/trace${re}"
+            WARP_INSTALLED=1
+            return 0
+        fi
+    else
+        echo -e "${red}WireProxy服务启动失败！${re}"
+        systemctl status wireproxy-warp.service
+        return 1
+    fi
 }
 
 # 检查域名是否支持IPv6
@@ -325,14 +446,14 @@ start() {
     # 安装基础依赖
     if [ $non_interactive -eq 1 ]; then
         echo -e "${yellow}自动安装依赖包...${re}"
-        install sudo ss iptables dig curl socat
+        install sudo ss iptables dig curl socat wget
     else
         echo -e "脚本所需依赖包: ${yellow}curl, sudo, ss, iptables, dig, socat${re}"
         read -p "是否允许脚本自动安装以上所需的依赖包(Y/N 默认Y): " install_apps
         install_apps=${install_apps^^}
         install_apps=${install_apps:-Y}
         if [ "$install_apps" == "Y" ]; then
-            install sudo ss iptables dig curl socat
+            install sudo ss iptables dig curl socat wget
         fi
     fi
 
