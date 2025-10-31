@@ -128,7 +128,7 @@ get_ipv6() {
     fi
 
     # 替换冒号为短横线
-    ipv6_domain="priv.$(echo $ipv6_address | sed 's/:/-/g').ip.proy.pp.ua"
+    ipv6_domain="priv.$(echo $ipv6_address | sed 's/:/-/g').域名"
 
     echo -e "当前服务器IPv6:${green} [${ipv6_address}]${re}"
 }
