@@ -30,6 +30,8 @@ ipv4_regex="^([0-9]{1,3}\.){3}[0-9]{1,3}$"
 # 全局变量
 USE_IPV4=0
 USE_IPV6=0
+ipv4_domain=""
+ipv6_domain=""
 
 # 等待用户返回
 break_end() {
@@ -150,11 +152,16 @@ get_ipv4() {
         if [[ ! $ipv4_address =~ $ipv4_regex ]]; then
             echo -e "${red}无法获取当前服务器的IPv4地址${re}"
             ipv4_address=""
+            ipv4_domain=""
             return 1
         fi
     fi
 
+    # 生成 IPv4 对应的域名格式（使用 myis.me 服务，将点替换为短横线）
+    ipv4_domain="priv.$(echo $ipv4_address | sed 's/\./-/g').myis.me"
+
     echo -e "当前服务器IPv4:${green} ${ipv4_address}${re}"
+    echo -e "IPv4 ProxyIP域名:${green} ${ipv4_domain}${re}"
     return 0
 }
 
@@ -171,14 +178,16 @@ get_ipv6() {
         if [[ ! $ipv6_address =~ $ipv6_regex ]]; then
             echo -e "${red}无法获取当前服务器的IPv6地址${re}"
             ipv6_address=""
+            ipv6_domain=""
             return 1
         fi
     fi
 
-    # 替换冒号为短横线
+    # 替换冒号为短横线，生成 IPv6 域名
     ipv6_domain="priv.$(echo $ipv6_address | sed 's/:/-/g').myis.me"
 
     echo -e "当前服务器IPv6:${green} [${ipv6_address}]${re}"
+    echo -e "IPv6 ProxyIP域名:${green} ${ipv6_domain}${re}"
     return 0
 }
 
@@ -243,8 +252,8 @@ start() {
         if [ $non_interactive -eq 0 ]; then
             echo ""
             echo "检测到的网络支持:"
-            [ $has_ipv4 -eq 0 ] && echo -e " - ${green}IPv4: ${ipv4_address}${re}"
-            [ $has_ipv6 -eq 0 ] && echo -e " - ${green}IPv6: ${ipv6_address}${re}"
+            [ $has_ipv4 -eq 0 ] && echo -e " - ${green}IPv4: ${ipv4_address} (域名: ${ipv4_domain})${re}"
+            [ $has_ipv6 -eq 0 ] && echo -e " - ${green}IPv6: ${ipv6_address} (域名: ${ipv6_domain})${re}"
             echo ""
             echo "请选择使用的IP协议版本:"
             echo " 1. 仅使用 IPv4"
@@ -496,7 +505,9 @@ if [ $NON_INTERACTIVE -eq 1 ]; then
     echo -e "${green}开启ProxyIP成功${re}"
     echo -e "端口:${yellow}${PORT_PARAM}${re}"
     [ $USE_IPV4 -eq 1 ] && echo -e "IPv4 ProxyIP: ${green}${ipv4_address}:${PORT_PARAM}${re}"
-    [ $USE_IPV6 -eq 1 ] && echo -e "IPv6 ProxyIP域名: ${green}${ipv6_domain}${re}"
+    [ $USE_IPV4 -eq 1 ] && echo -e "IPv4 ProxyIP域名: ${green}${ipv4_domain}:${PORT_PARAM}${re}"
+    [ $USE_IPV6 -eq 1 ] && echo -e "IPv6 ProxyIP: ${green}[${ipv6_address}]:${PORT_PARAM}${re}"
+    [ $USE_IPV6 -eq 1 ] && echo -e "IPv6 ProxyIP域名: ${green}${ipv6_domain}:${PORT_PARAM}${re}"
     exit 0
 fi
 
@@ -512,9 +523,14 @@ echo -e "${yellow}|_|   |_|  \\___/_/\\_\\\\__,  |___|_|     \\_/  \\___/ ${re}"
 echo -e " 作者: cmliu         ${yellow}|___/${re} TG交流群: t.me/CMLiussss"    
 echo "-------------------------------------------------------------------"
 echo " 配置信息:" 
-[ -n "$ipv4_address" ] && echo -e " IPv4:${green} ${ipv4_address}${re}"
-[ -n "$ipv6_address" ] && echo -e " IPv6:${green} [${ipv6_address}]${re}"
-[ -n "$ipv6_address" ] && echo -e " ProxyIP域名:${green} ${ipv6_domain}${re}"
+if [ -n "$ipv4_address" ]; then
+    echo -e " IPv4:${green} ${ipv4_address}${re}"
+    echo -e " IPv4 ProxyIP域名:${green} ${ipv4_domain}${re}"
+fi
+if [ -n "$ipv6_address" ]; then
+    echo -e " IPv6:${green} [${ipv6_address}]${re}"
+    echo -e " IPv6 ProxyIP域名:${green} ${ipv6_domain}${re}"
+fi
 echo "-------------------------------------------------------------------"
 echo -e " 1. ${green}开启 Cloudflare ProxyIP ${re}"
 echo -e " 2. ${purple}清除 Cloudflare ProxyIP 规则${re}"
@@ -540,6 +556,8 @@ case $choice in
         start 0
         echo -e "${green}开启ProxyIP成功${re}"
         [ $USE_IPV4 -eq 1 ] && echo -e "你的IPv4 ProxyIP: ${green}${ipv4_address}${re}"
+        [ $USE_IPV4 -eq 1 ] && echo -e "你的IPv4 ProxyIP域名: ${green}${ipv4_domain}${re}"
+        [ $USE_IPV6 -eq 1 ] && echo -e "你的IPv6 ProxyIP: ${green}[${ipv6_address}]${re}"
         [ $USE_IPV6 -eq 1 ] && echo -e "你的IPv6 ProxyIP域名: ${green}${ipv6_domain}${re}"
     fi
     ;;
